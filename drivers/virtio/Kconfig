@@ -84,6 +84,16 @@ config VIRTIO_MMIO
 
  	 If unsure, say N.
 
+config VIRTIO_MMIO_MSI
+	bool "Memory mapped virtio devices msi interrupt supporting"
+	depends on VIRTIO_MMIO && GENERIC_MSI_IRQ_DOMAIN && GENERIC_MSI_IRQ
+	help
+	 This drivers supports msi interrupt handling for virtio-mmio devices,
+	 which was introduced in virtio-mmio specification version 3. It can
+	 increases the interrupt performance greatly.
+
+	 If unsure, say 'N'.
+
 config VIRTIO_MMIO_CMDLINE_DEVICES
 	bool "Memory mapped virtio devices parameter parsing"
 	depends on VIRTIO_MMIO

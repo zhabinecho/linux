@@ -122,6 +122,37 @@
 #define VIRTIO_MMIO_QUEUE_USED_LOW	0x0a0
 #define VIRTIO_MMIO_QUEUE_USED_HIGH	0x0a4
 
+/* MSI related registers */
+#define VIRTIO_MMIO_MSI_NO_VECTOR	0xffffffff
+
+/* MSI max vector register */
+#define VIRTIO_MMIO_VEC_NUM		0x0c0
+/* MSI state register */
+#define VIRTIO_MMIO_MSI_STATE		0x0c4
+/* MSI command register */
+#define VIRTIO_MMIO_MSI_COMMAND		0x0c8
+/* MSI vector select register */
+#define VIRTIO_MMIO_VEC_SEL		0x0d0
+/* MSI low 32 bit address, 64 bits in two halves */
+#define VIRTIO_MMIO_MSI_ADDRESS_LOW	0x0d4
+/* MSI high 32 bit address, 64 bits in two halves */
+#define VIRTIO_MMIO_MSI_ADDRESS_HIGH	0x0d8
+/* MSI data */
+#define VIRTIO_MMIO_MSI_DATA		0x0dc
+
+/* RO: MSI state enabled mask */
+#define VIRTIO_MMIO_MSI_ENABLE_MASK	(1 << 31)
+/* RO: MSI state dyn mapping mask */
+#define VIRTIO_MMIO_MSI_MAPPING_MASK	(1 << 30)
+
+#define VIRTIO_MMIO_MSI_CMD_ENABLE	0x1
+#define VIRTIO_MMIO_MSI_CMD_DISABLE	0x2
+#define VIRTIO_MMIO_MSI_CMD_CONFIGURE	0x3
+#define VIRTIO_MMIO_MSI_CMD_MASK	0x4
+#define VIRTIO_MMIO_MSI_CMD_UNMASK	0x5
+#define VIRTIO_MMIO_MSI_CMD_MAP_CONFIG	0x6
+#define VIRTIO_MMIO_MSI_CMD_MAP_QUEUE	0x7
+
 /* Configuration atomicity value */
 #define VIRTIO_MMIO_CONFIG_GENERATION	0x0fc
 
