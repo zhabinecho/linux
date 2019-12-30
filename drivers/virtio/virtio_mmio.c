@@ -90,6 +90,9 @@ struct virtio_mmio_device {
 	/* a list of queues so we can dispatch IRQs */
 	spinlock_t lock;
 	struct list_head virtqueues;
+
+	unsigned short notify_base;
+	unsigned short notify_multiplier;
 };
 
 struct virtio_mmio_vq_info {
@@ -98,6 +101,9 @@ struct virtio_mmio_vq_info {
 
 	/* the list node for the virtqueues list */
 	struct list_head node;
+
+	/* Notify Address*/
+	unsigned int priv;
 };
 
 
@@ -272,10 +278,14 @@ static void vm_reset(struct virtio_device *vdev)
 static bool vm_notify(struct virtqueue *vq)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
+	struct virtio_mmio_vq_info *info = vq->priv;
 
+	if (info && info->priv != 0)
+		writel(vq->index, vm_dev->base + info->priv);
+	else
 	/* We write the queue's selector into the notification register to
 	 * signal the other end */
-	writel(vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+		writel(vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
 	return true;
 }
 
@@ -433,6 +443,9 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 
 	vq->priv = info;
 	info->vq = vq;
+	/* If not set VIRTIO_F_MMIO_NOTIFICATION, info->priv is 0 */
+	info->priv = vm_dev->notify_base +
+			vm_dev->notify_multiplier * vq->index;
 
 	spin_lock_irqsave(&vm_dev->lock, flags);
 	list_add(&info->node, &vm_dev->virtqueues);
@@ -469,6 +482,13 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	if (irq < 0) {
 		dev_err(&vdev->dev, "Cannot get IRQ resource\n");
 		return irq;
+	}
+
+	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION)) {
+		u32 db = readl(vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+
+		vm_dev->notify_base = db & 0xffff;
+		vm_dev->notify_multiplier = (db >> 16) & 0xffff;
 	}
 
 	err = request_irq(irq, vm_interrupt, IRQF_SHARED,
