@@ -76,6 +76,17 @@ static inline void irq_chip_write_msi_msg(struct irq_data *data,
 	data->chip->irq_write_msi_msg(data, msg);
 }
 
+void __attribute__((weak)) irq_msi_compose_msg(struct irq_data *data,
+						struct msi_msg *msg)
+{
+}
+
+struct irq_domain *__attribute__((weak))
+arch_msi_root_irq_domain(void)
+{
+	return NULL;
+}
+
 static void msi_check_level(struct irq_domain *domain, struct msi_msg *msg)
 {
 	struct msi_domain_info *info = domain->host_data;

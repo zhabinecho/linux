@@ -321,6 +321,8 @@ enum {
 	MSI_FLAG_LEVEL_CAPABLE		= (1 << 6),
 };
 
+struct irq_domain *arch_msi_root_irq_domain(void);
+void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg);
 int msi_domain_set_affinity(struct irq_data *data, const struct cpumask *mask,
 			    bool force);
 
@@ -362,6 +364,7 @@ int platform_msi_domain_alloc(struct irq_domain *domain, unsigned int virq,
 void platform_msi_domain_free(struct irq_domain *domain, unsigned int virq,
 			      unsigned int nvec);
 void *platform_msi_get_host_data(struct irq_domain *domain);
+irq_hw_number_t platform_msi_calc_hwirq(struct msi_desc *desc);
 #endif /* CONFIG_GENERIC_MSI_IRQ_DOMAIN */
 
 #ifdef CONFIG_PCI_MSI_IRQ_DOMAIN
