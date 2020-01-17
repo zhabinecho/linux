@@ -90,7 +90,7 @@
 #define VIRTIO_F_SR_IOV			37
 
 /*
- * Note the feature is supported by virtio-mmio device
+ * This feature indicates the enhanced notification support on MMIO layer.
  */
 #define VIRTIO_F_MMIO_NOTIFICATION	39
 #endif /* _UAPI_LINUX_VIRTIO_CONFIG_H */

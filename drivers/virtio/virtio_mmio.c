@@ -102,8 +102,8 @@ struct virtio_mmio_vq_info {
 	/* the list node for the virtqueues list */
 	struct list_head node;
 
-	/* Notify Address*/
-	unsigned int priv;
+	/* Notify Address */
+	unsigned int notify_addr;
 };
 
 
@@ -125,12 +125,21 @@ static u64 vm_get_features(struct virtio_device *vdev)
 	return features;
 }
 
+static void vm_transport_features(struct virtio_device *vdev)
+{
+	if (vdev->features & BIT_ULL(VIRTIO_F_MMIO_NOTIFICATION))
+		__virtio_set_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION);
+}
+
 static int vm_finalize_features(struct virtio_device *vdev)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 
 	/* Give virtio_ring a chance to accept features. */
 	vring_transport_features(vdev);
+
+	/* Give virtio_mmio a chance to accept features. */
+	vm_transport_features(vdev);
 
 	/* Make sure there is are no mixed devices */
 	if (vm_dev->version == 2 &&
@@ -280,12 +289,11 @@ static bool vm_notify(struct virtqueue *vq)
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
 	struct virtio_mmio_vq_info *info = vq->priv;
 
-	if (info && info->priv != 0)
-		writel(vq->index, vm_dev->base + info->priv);
-	else
-	/* We write the queue's selector into the notification register to
+	/* We write the queue's selector into Notify Address to
 	 * signal the other end */
-		writel(vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+	if (info)
+		writel(vq->index, vm_dev->base + info->notify_addr);
+
 	return true;
 }
 
@@ -443,9 +451,12 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 
 	vq->priv = info;
 	info->vq = vq;
-	/* If not set VIRTIO_F_MMIO_NOTIFICATION, info->priv is 0 */
-	info->priv = vm_dev->notify_base +
-			vm_dev->notify_multiplier * vq->index;
+
+	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION))
+		info->notify_addr = vm_dev->notify_base +
+				    vm_dev->notify_multiplier * vq->index;
+	else
+		info->notify_addr = VIRTIO_MMIO_QUEUE_NOTIFY;
 
 	spin_lock_irqsave(&vm_dev->lock, flags);
 	list_add(&info->node, &vm_dev->virtqueues);
@@ -485,10 +496,10 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	}
 
 	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION)) {
-		u32 db = readl(vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+		unsigned notify = readl(vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
 
-		vm_dev->notify_base = db & 0xffff;
-		vm_dev->notify_multiplier = (db >> 16) & 0xffff;
+		vm_dev->notify_base = notify & 0xffff;
+		vm_dev->notify_multiplier = (notify >> 16) & 0xffff;
 	}
 
 	err = request_irq(irq, vm_interrupt, IRQF_SHARED,
