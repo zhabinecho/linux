@@ -68,13 +68,9 @@
 #include <linux/virtio_ring.h>
 #include "virtio_mmio_common.h"
 
-
-
 /* The alignment to use between consumer and producer parts of vring.
  * Currently hardcoded to the page size. */
 #define VIRTIO_MMIO_VRING_ALIGN		PAGE_SIZE
-
-
 
 struct virtio_mmio_vq_info {
 	/* the actual virtqueue */
@@ -110,6 +106,9 @@ static void vm_transport_features(struct virtio_device *vdev)
 {
 	if (vdev->features & BIT_ULL(VIRTIO_F_MMIO_NOTIFICATION))
 		__virtio_set_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION);
+
+	if (vdev->features & BIT_ULL(VIRTIO_F_MMIO_MSI))
+		__virtio_set_bit(vdev, VIRTIO_F_MMIO_MSI);
 }
 
 static int vm_finalize_features(struct virtio_device *vdev)
