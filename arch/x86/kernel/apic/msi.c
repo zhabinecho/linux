@@ -23,7 +23,11 @@
 
 static struct irq_domain *msi_default_domain;
 
-static void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+/*
+ * x86 PCI-MSI/HPET/DMAR related method.
+ * Also can be used as arch specific method for virtio-mmio MSI.
+ */
+void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
 {
 	struct irq_cfg *cfg = irqd_cfg(data);
 
@@ -45,6 +49,11 @@ static void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
 		MSI_DATA_LEVEL_ASSERT |
 		MSI_DATA_DELIVERY_FIXED |
 		MSI_DATA_VECTOR(cfg->vector);
+}
+
+struct irq_domain *arch_msi_root_irq_domain(void)
+{
+	return x86_vector_domain;
 }
 
 /*
