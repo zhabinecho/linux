@@ -61,36 +61,17 @@
 #include <linux/io.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
-
-
+#include "virtio_mmio_common.h"
+#include "virtio_mmio_msi.h"
 
 /* The alignment to use between consumer and producer parts of vring.
  * Currently hardcoded to the page size. */
 #define VIRTIO_MMIO_VRING_ALIGN		PAGE_SIZE
-
-
-
-#define to_virtio_mmio_device(_plat_dev) \
-	container_of(_plat_dev, struct virtio_mmio_device, vdev)
-
-struct virtio_mmio_device {
-	struct virtio_device vdev;
-	struct platform_device *pdev;
-
-	void __iomem *base;
-	unsigned long version;
-
-	/* a list of queues so we can dispatch IRQs */
-	spinlock_t lock;
-	struct list_head virtqueues;
-};
 
 struct virtio_mmio_vq_info {
 	/* the actual virtqueue */
@@ -98,9 +79,16 @@ struct virtio_mmio_vq_info {
 
 	/* the list node for the virtqueues list */
 	struct list_head node;
+
+	/* Notify Address */
+	unsigned int notify_addr;
+
+	/* MSI vector (or none) */
+	unsigned int msi_vector;
 };
 
-
+static void vm_free_msi_irqs(struct virtio_device *vdev);
+static int vm_request_msi_vectors(struct virtio_device *vdev, int nirqs);
 
 /* Configuration interface */
 
@@ -119,12 +107,24 @@ static u64 vm_get_features(struct virtio_device *vdev)
 	return features;
 }
 
+static void vm_transport_features(struct virtio_device *vdev)
+{
+	if (vdev->features & BIT_ULL(VIRTIO_F_MMIO_NOTIFICATION))
+		__virtio_set_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION);
+
+	if (vdev->features & BIT_ULL(VIRTIO_F_MMIO_MSI))
+		__virtio_set_bit(vdev, VIRTIO_F_MMIO_MSI);
+}
+
 static int vm_finalize_features(struct virtio_device *vdev)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 
 	/* Give virtio_ring a chance to accept features. */
 	vring_transport_features(vdev);
+
+	/* Give virtio_mmio a chance to accept features. */
+	vm_transport_features(vdev);
 
 	/* Make sure there is are no mixed devices */
 	if (vm_dev->version == 2 &&
@@ -264,18 +264,19 @@ static void vm_reset(struct virtio_device *vdev)
 	writel(0, vm_dev->base + VIRTIO_MMIO_STATUS);
 }
 
-
-
 /* Transport interface */
 
 /* the notify function used when creating a virt queue */
 static bool vm_notify(struct virtqueue *vq)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
+	struct virtio_mmio_vq_info *info = vq->priv;
 
-	/* We write the queue's selector into the notification register to
+	/* We write the queue's selector into Notify Address to
 	 * signal the other end */
-	writel(vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+	if (info)
+		writel(vq->index, vm_dev->base + info->notify_addr);
+
 	return true;
 }
 
@@ -307,7 +308,33 @@ static irqreturn_t vm_interrupt(int irq, void *opaque)
 	return ret;
 }
 
+static irqreturn_t vm_vring_interrupt(int irq, void *opaque)
+{
+	struct virtio_mmio_device *vm_dev = opaque;
+	struct virtio_mmio_vq_info *info;
+	irqreturn_t ret = IRQ_NONE;
+	unsigned long flags;
 
+	spin_lock_irqsave(&vm_dev->lock, flags);
+	list_for_each_entry(info, &vm_dev->virtqueues, node) {
+		if (vring_interrupt(irq, info->vq) == IRQ_HANDLED)
+			ret = IRQ_HANDLED;
+	}
+	spin_unlock_irqrestore(&vm_dev->lock, flags);
+
+	return ret;
+}
+
+
+/* Handle a configuration change */
+static irqreturn_t vm_config_changed(int irq, void *opaque)
+{
+	struct virtio_mmio_device *vm_dev = opaque;
+
+	virtio_config_changed(&vm_dev->vdev);
+
+	return IRQ_HANDLED;
+}
 
 static void vm_del_vq(struct virtqueue *vq)
 {
@@ -315,6 +342,15 @@ static void vm_del_vq(struct virtqueue *vq)
 	struct virtio_mmio_vq_info *info = vq->priv;
 	unsigned long flags;
 	unsigned int index = vq->index;
+
+	if (vm_dev->msi_enabled && !vm_dev->msi_share) {
+		if (info->msi_vector != VIRTIO_MMIO_MSI_NO_VECTOR) {
+			int irq = mmio_msi_irq_vector(&vq->vdev->dev,
+					info->msi_vector);
+
+			free_irq(irq, vq);
+		}
+	}
 
 	spin_lock_irqsave(&vm_dev->lock, flags);
 	list_del(&info->node);
@@ -334,20 +370,41 @@ static void vm_del_vq(struct virtqueue *vq)
 	kfree(info);
 }
 
-static void vm_del_vqs(struct virtio_device *vdev)
+static void vm_free_irqs(struct virtio_device *vdev)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+
+	if (vm_dev->msi_enabled)
+		vm_free_msi_irqs(vdev);
+	else
+		free_irq(platform_get_irq(vm_dev->pdev, 0), vm_dev);
+}
+
+static void vm_del_vqs(struct virtio_device *vdev)
+{
 	struct virtqueue *vq, *n;
 
 	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
 		vm_del_vq(vq);
 
-	free_irq(platform_get_irq(vm_dev->pdev, 0), vm_dev);
+	vm_free_irqs(vdev);
+}
+
+static void mmio_msi_config_vector(struct virtio_mmio_device *vm_dev, u32 vec)
+{
+	writel(vec, vm_dev->base + VIRTIO_MMIO_MSI_VEC_SEL);
+	writel(VIRTIO_MMIO_MSI_CMD_MAP_CONFIG, vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
+}
+
+static void mmio_msi_queue_vector(struct virtio_mmio_device *vm_dev, u32 vec)
+{
+	writel(vec, vm_dev->base + VIRTIO_MMIO_MSI_VEC_SEL);
+	writel(VIRTIO_MMIO_MSI_CMD_MAP_QUEUE, vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
 }
 
 static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 				  void (*callback)(struct virtqueue *vq),
-				  const char *name, bool ctx)
+				  const char *name, bool ctx, u32 msi_vector)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	struct virtio_mmio_vq_info *info;
@@ -434,6 +491,18 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 	vq->priv = info;
 	info->vq = vq;
 
+	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION))
+		info->notify_addr = vm_dev->notify_base +
+				    vm_dev->notify_multiplier * vq->index;
+	else
+		info->notify_addr = VIRTIO_MMIO_QUEUE_NOTIFY;
+
+	info->msi_vector = msi_vector;
+
+	/* Set queue event and vector mapping for MSI share mode. */
+	if (vm_dev->msi_share && msi_vector != VIRTIO_MMIO_MSI_NO_VECTOR)
+		mmio_msi_queue_vector(vm_dev, msi_vector);
+
 	spin_lock_irqsave(&vm_dev->lock, flags);
 	list_add(&info->node, &vm_dev->virtqueues);
 	spin_unlock_irqrestore(&vm_dev->lock, flags);
@@ -455,12 +524,11 @@ error_available:
 	return ERR_PTR(err);
 }
 
-static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
-		       struct virtqueue *vqs[],
-		       vq_callback_t *callbacks[],
-		       const char * const names[],
-		       const bool *ctx,
-		       struct irq_affinity *desc)
+static int vm_find_vqs_intx(struct virtio_device *vdev, unsigned int nvqs,
+			struct virtqueue *vqs[],
+			vq_callback_t *callbacks[],
+			const char * const names[],
+			const bool *ctx)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	int irq = platform_get_irq(vm_dev->pdev, 0);
@@ -473,8 +541,6 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 
 	err = request_irq(irq, vm_interrupt, IRQF_SHARED,
 			dev_name(&vdev->dev), vm_dev);
-	if (err)
-		return err;
 
 	for (i = 0; i < nvqs; ++i) {
 		if (!names[i]) {
@@ -483,14 +549,201 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		}
 
 		vqs[i] = vm_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
-				     ctx ? ctx[i] : false);
+				     ctx ? ctx[i] : false,
+				     VIRTIO_MMIO_MSI_NO_VECTOR);
 		if (IS_ERR(vqs[i])) {
 			vm_del_vqs(vdev);
 			return PTR_ERR(vqs[i]);
 		}
 	}
 
+	return err;
+}
+
+static int vm_find_vqs_msi(struct virtio_device *vdev, unsigned int nvqs,
+			struct virtqueue *vqs[], vq_callback_t *callbacks[],
+			const char * const names[], bool per_vq_vectors,
+			const bool *ctx, struct irq_affinity *desc)
+{
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	int i, err, allocated_vectors, nvectors;
+	u32 msi_vec;
+	u32 max_vec_num = readl(vm_dev->base + VIRTIO_MMIO_MSI_VEC_NUM);
+
+	/* For MSI non-sharing, the max vector number MUST greater than nvqs.
+	 * Otherwise, go back to legacy interrupt.
+	 */
+	if (per_vq_vectors && max_vec_num < (nvqs + 1))
+		return -EINVAL;
+
+	if (per_vq_vectors) {
+		nvectors = 1;
+		for (i = 0; i < nvqs; ++i)
+			if (callbacks[i])
+				++nvectors;
+	} else {
+		nvectors = 2;
+	}
+
+	vm_dev->msi_share = !per_vq_vectors;
+
+	/* Allocate nvqs irqs for queues and one irq for configuration */
+	err = vm_request_msi_vectors(vdev, nvectors);
+	if (err != 0)
+		return err;
+
+	allocated_vectors = vm_dev->msi_used_vectors;
+	for (i = 0; i < nvqs; i++) {
+		if (!names[i]) {
+			vqs[i] = NULL;
+			continue;
+		}
+		if (!callbacks[i])
+			msi_vec = VIRTIO_MMIO_MSI_NO_VECTOR;
+		else if (per_vq_vectors)
+			msi_vec = allocated_vectors++;
+		else
+			msi_vec = 1;
+		vqs[i] = vm_setup_vq(vdev, i, callbacks[i], names[i],
+				ctx ? ctx[i] : false, msi_vec);
+		if (IS_ERR(vqs[i])) {
+			err = PTR_ERR(vqs[i]);
+			goto error_find;
+		}
+
+		if (!per_vq_vectors ||
+				msi_vec == VIRTIO_MMIO_MSI_NO_VECTOR)
+			continue;
+
+		/* allocate per-vq irq if available and necessary */
+		snprintf(vm_dev->vm_vq_names[msi_vec],
+			sizeof(*vm_dev->vm_vq_names),
+			"%s-%s",
+			dev_name(&vm_dev->vdev.dev), names[i]);
+		err = request_irq(mmio_msi_irq_vector(&vqs[i]->vdev->dev,
+					msi_vec),
+				vring_interrupt, 0,
+				vm_dev->vm_vq_names[msi_vec], vqs[i]);
+
+		if (err)
+			goto error_find;
+	}
+
 	return 0;
+
+error_find:
+	vm_del_vqs(vdev);
+	return err;
+}
+
+static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
+		       struct virtqueue *vqs[],
+		       vq_callback_t *callbacks[],
+		       const char * const names[],
+		       const bool *ctx,
+		       struct irq_affinity *desc)
+{
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	int err;
+
+	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_NOTIFICATION)) {
+		unsigned notify = readl(vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
+
+		vm_dev->notify_base = notify & 0xffff;
+		vm_dev->notify_multiplier = (notify >> 16) & 0xffff;
+	}
+
+	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_MSI)) {
+		bool dyn_mapping = !!(readl(vm_dev->base + VIRTIO_MMIO_MSI_STATE) &
+				VIRTIO_MMIO_MSI_SHARING_MASK);
+
+		if (!dyn_mapping)
+			err = vm_find_vqs_msi(vdev, nvqs, vqs, callbacks,
+						names, true, ctx, desc);
+		else
+			err = vm_find_vqs_msi(vdev, nvqs, vqs, callbacks,
+						names, false, ctx, desc);
+		if (!err)
+			return 0;
+	}
+
+	return vm_find_vqs_intx(vdev, nvqs, vqs, callbacks, names, ctx);
+}
+
+static int vm_request_msi_vectors(struct virtio_device *vdev, int nirqs)
+{
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	unsigned int v;
+	int irq, err;
+
+	if (vm_dev->msi_enabled)
+		return -EINVAL;
+
+	vm_dev->vm_vq_names = kmalloc_array(nirqs, sizeof(*vm_dev->vm_vq_names),
+					GFP_KERNEL);
+	if (!vm_dev->vm_vq_names)
+		return -ENOMEM;
+
+	mmio_get_msi_domain(vdev);
+	err = mmio_msi_domain_alloc_irqs(&vdev->dev, nirqs);
+	if (err) {
+		kfree(vm_dev->vm_vq_names);
+		vm_dev->vm_vq_names = NULL;
+		return err;
+	}
+
+	mmio_msi_set_enable(vm_dev, 1);
+	vm_dev->msi_enabled = true;
+
+	v = vm_dev->msi_used_vectors;
+	/* The first MSI vector is used for configuration change event. */
+	snprintf(vm_dev->vm_vq_names[v], sizeof(*vm_dev->vm_vq_names),
+			"%s-config", dev_name(&vdev->dev));
+	irq = mmio_msi_irq_vector(&vdev->dev, v);
+	err = request_irq(irq, vm_config_changed, 0, vm_dev->vm_vq_names[v],
+			vm_dev);
+	if (err)
+		goto error_request_irq;
+
+	/* Set the configuration event mapping. */
+	if (vm_dev->msi_share)
+		mmio_msi_config_vector(vm_dev, v);
+
+	++vm_dev->msi_used_vectors;
+
+	if (vm_dev->msi_share) {
+		v = vm_dev->msi_used_vectors;
+		snprintf(vm_dev->vm_vq_names[v], sizeof(*vm_dev->vm_vq_names),
+			 "%s-virtqueues", dev_name(&vm_dev->vdev.dev));
+		err = request_irq(mmio_msi_irq_vector(&vdev->dev, v),
+				  vm_vring_interrupt, 0, vm_dev->vm_vq_names[v],
+				  vm_dev);
+		if (err)
+			goto error_request_irq;
+		++vm_dev->msi_used_vectors;
+	}
+
+	return 0;
+
+error_request_irq:
+	vm_free_msi_irqs(vdev);
+
+	return err;
+}
+
+static void vm_free_msi_irqs(struct virtio_device *vdev)
+{
+	int i;
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+
+	mmio_msi_set_enable(vm_dev, 0);
+	for (i = 0; i < vm_dev->msi_used_vectors; i++)
+		free_irq(mmio_msi_irq_vector(&vdev->dev, i), vm_dev);
+	mmio_msi_domain_free_irqs(&vdev->dev);
+	kfree(vm_dev->vm_vq_names);
+	vm_dev->vm_vq_names = NULL;
+	vm_dev->msi_enabled = false;
+	vm_dev->msi_used_vectors = 0;
 }
 
 static const char *vm_bus_name(struct virtio_device *vdev)
@@ -603,6 +856,8 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "Failed to enable 64-bit or 32-bit DMA.  Trying to continue, but this might not work.\n");
 
 	platform_set_drvdata(pdev, vm_dev);
+
+	mmio_msi_create_irq_domain();
 
 	rc = register_virtio_device(&vm_dev->vdev);
 	if (rc)
