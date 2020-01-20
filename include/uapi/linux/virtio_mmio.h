@@ -151,12 +151,16 @@
 #define VIRTIO_MMIO_MSI_CMD_CONFIGURE	0x3
 #define VIRTIO_MMIO_MSI_CMD_MASK	0x4
 #define VIRTIO_MMIO_MSI_CMD_UNMASK	0x5
+#define VIRTIO_MMIO_MSI_CMD_MAP_CONFIG	0x6
+#define VIRTIO_MMIO_MSI_CMD_MAP_QUEUE	0x7
 
 /* MSI NO_VECTOR */
 #define VIRTIO_MMIO_MSI_NO_VECTOR	0xffffffff
 
 /* MSI state enabled state mask */
 #define VIRTIO_MMIO_MSI_ENABLED_MASK	(1 << 31)
+/* MSI state MSI sharing mask */
+#define VIRTIO_MMIO_MSI_SHARING_MASK	(1 << 30)
 
 /*
  * Interrupt flags (re: interrupt status & acknowledge registers)

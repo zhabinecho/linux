@@ -32,7 +32,7 @@ struct virtio_mmio_device {
 
 	/* used vectors */
 	unsigned int msi_used_vectors;
-	bool per_vq_vectors;
+	bool msi_share;
 	bool msi_enabled;
 };
 
