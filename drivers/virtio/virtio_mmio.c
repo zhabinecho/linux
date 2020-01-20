@@ -343,7 +343,7 @@ static void vm_del_vq(struct virtqueue *vq)
 	unsigned long flags;
 	unsigned int index = vq->index;
 
-	if (vm_dev->msi_enabled && vm_dev->per_vq_vectors) {
+	if (vm_dev->msi_enabled && !vm_dev->msi_share) {
 		if (info->msi_vector != VIRTIO_MMIO_MSI_NO_VECTOR) {
 			int irq = mmio_msi_irq_vector(&vq->vdev->dev,
 					info->msi_vector);
@@ -390,17 +390,16 @@ static void vm_del_vqs(struct virtio_device *vdev)
 	vm_free_irqs(vdev);
 }
 
-static inline void mmio_msi_set_enable(struct virtio_mmio_device *vm_dev,
-					int enable)
+static void mmio_msi_config_vector(struct virtio_mmio_device *vm_dev, u32 vec)
 {
-	u32 state;
+	writel(vec, vm_dev->base + VIRTIO_MMIO_MSI_VEC_SEL);
+	writel(VIRTIO_MMIO_MSI_CMD_MAP_CONFIG, vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
+}
 
-	state = readl(vm_dev->base + VIRTIO_MMIO_MSI_STATE);
-	if (enable && (state & VIRTIO_MMIO_MSI_ENABLED_MASK))
-		return;
-
-	writel(VIRTIO_MMIO_MSI_CMD_ENABLE,
-		vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
+static void mmio_msi_queue_vector(struct virtio_mmio_device *vm_dev, u32 vec)
+{
+	writel(vec, vm_dev->base + VIRTIO_MMIO_MSI_VEC_SEL);
+	writel(VIRTIO_MMIO_MSI_CMD_MAP_QUEUE, vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
 }
 
 static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
@@ -500,6 +499,10 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 
 	info->msi_vector = msi_vector;
 
+	/* Set queue event and vector mapping for MSI share mode. */
+	if (vm_dev->msi_share && msi_vector != VIRTIO_MMIO_MSI_NO_VECTOR)
+		mmio_msi_queue_vector(vm_dev, msi_vector);
+
 	spin_lock_irqsave(&vm_dev->lock, flags);
 	list_add(&info->node, &vm_dev->virtqueues);
 	spin_unlock_irqrestore(&vm_dev->lock, flags);
@@ -565,6 +568,13 @@ static int vm_find_vqs_msi(struct virtio_device *vdev, unsigned int nvqs,
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	int i, err, allocated_vectors, nvectors;
 	u32 msi_vec;
+	u32 max_vec_num = readl(vm_dev->base + VIRTIO_MMIO_MSI_VEC_NUM);
+
+	/* For MSI non-sharing, the max vector number MUST greater than nvqs.
+	 * Otherwise, go back to legacy interrupt.
+	 */
+	if (per_vq_vectors && max_vec_num < (nvqs + 1))
+		return -EINVAL;
 
 	if (per_vq_vectors) {
 		nvectors = 1;
@@ -575,7 +585,7 @@ static int vm_find_vqs_msi(struct virtio_device *vdev, unsigned int nvqs,
 		nvectors = 2;
 	}
 
-	vm_dev->per_vq_vectors = per_vq_vectors;
+	vm_dev->msi_share = !per_vq_vectors;
 
 	/* Allocate nvqs irqs for queues and one irq for configuration */
 	err = vm_request_msi_vectors(vdev, nvectors);
@@ -644,8 +654,15 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	}
 
 	if (__virtio_test_bit(vdev, VIRTIO_F_MMIO_MSI)) {
-		err = vm_find_vqs_msi(vdev, nvqs, vqs, callbacks,
-				names, true, ctx, desc);
+		bool dyn_mapping = !!(readl(vm_dev->base + VIRTIO_MMIO_MSI_STATE) &
+				VIRTIO_MMIO_MSI_SHARING_MASK);
+
+		if (!dyn_mapping)
+			err = vm_find_vqs_msi(vdev, nvqs, vqs, callbacks,
+						names, true, ctx, desc);
+		else
+			err = vm_find_vqs_msi(vdev, nvqs, vqs, callbacks,
+						names, false, ctx, desc);
 		if (!err)
 			return 0;
 	}
@@ -688,9 +705,13 @@ static int vm_request_msi_vectors(struct virtio_device *vdev, int nirqs)
 	if (err)
 		goto error_request_irq;
 
+	/* Set the configuration event mapping. */
+	if (vm_dev->msi_share)
+		mmio_msi_config_vector(vm_dev, v);
+
 	++vm_dev->msi_used_vectors;
 
-	if (!vm_dev->per_vq_vectors) {
+	if (vm_dev->msi_share) {
 		v = vm_dev->msi_used_vectors;
 		snprintf(vm_dev->vm_vq_names[v], sizeof(*vm_dev->vm_vq_names),
 			 "%s-virtqueues", dev_name(&vm_dev->vdev.dev));
