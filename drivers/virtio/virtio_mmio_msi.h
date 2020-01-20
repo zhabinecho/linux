@@ -8,6 +8,7 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/platform_device.h>
+#include "virtio_mmio_common.h"
 
 static irq_hw_number_t mmio_msi_hwirq;
 static struct irq_domain *mmio_msi_domain;
@@ -21,12 +22,41 @@ void __weak irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
 {
 }
 
+static void __iomem *vm_dev_base(struct msi_desc *desc)
+{
+	if (desc) {
+		struct device *dev = desc->dev;
+		struct virtio_device *vdev = dev_to_virtio(dev);
+		struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+
+		return vm_dev->base;
+	}
+
+	return NULL;
+}
+
+static void mmio_msi_set_mask_bit(struct irq_data *data, u32 flag)
+{
+	struct msi_desc *desc = irq_data_get_msi_desc(data);
+	void __iomem *base = vm_dev_base(desc);
+	unsigned int offset = data->irq - desc->irq;
+
+	if (base) {
+		u32 op = flag ? VIRTIO_MMIO_MSI_CMD_MASK :
+			VIRTIO_MMIO_MSI_CMD_UNMASK;
+		writel(offset, base + VIRTIO_MMIO_MSI_VEC_SEL);
+		writel(op, base + VIRTIO_MMIO_MSI_COMMAND);
+	}
+}
+
 static void mmio_msi_mask_irq(struct irq_data *data)
 {
+	mmio_msi_set_mask_bit(data, 1);
 }
 
 static void mmio_msi_unmask_irq(struct irq_data *data)
 {
+	mmio_msi_set_mask_bit(data, 0);
 }
 
 static struct irq_chip mmio_msi_controller = {
@@ -86,8 +116,72 @@ static inline void mmio_msi_create_irq_domain(void)
 		irq_domain_free_fwnode(fn);
 	}
 }
+
+static void mmio_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
+{
+	void __iomem *base = vm_dev_base(desc);
+
+	if (base) {
+		writel(desc->platform.msi_index, base + VIRTIO_MMIO_MSI_VEC_SEL);
+		writel(msg->address_lo, base + VIRTIO_MMIO_MSI_ADDRESS_LOW);
+		writel(msg->address_hi, base + VIRTIO_MMIO_MSI_ADDRESS_HIGH);
+		writel(msg->data, base + VIRTIO_MMIO_MSI_DATA);
+		writel(VIRTIO_MMIO_MSI_CMD_CONFIGURE,
+			base + VIRTIO_MMIO_MSI_COMMAND);
+	}
+}
+
+static inline int mmio_msi_domain_alloc_irqs(struct device *dev,
+				unsigned int nvec)
+{
+	return platform_msi_domain_alloc_irqs(dev, nvec,
+			mmio_write_msi_msg);
+}
+
+static inline void mmio_msi_domain_free_irqs(struct device *dev)
+{
+	return platform_msi_domain_free_irqs(dev);
+}
+
+static inline void mmio_get_msi_domain(struct virtio_device *vdev)
+{
+	if (!vdev->dev.msi_domain)
+		vdev->dev.msi_domain = mmio_msi_domain;
+}
+
+static inline void mmio_msi_set_enable(struct virtio_mmio_device *vm_dev,
+					int enable)
+{
+	u32 state;
+
+	state = readl(vm_dev->base + VIRTIO_MMIO_MSI_STATE);
+	if (enable && (state & VIRTIO_MMIO_MSI_ENABLED_MASK))
+		return;
+
+	writel(VIRTIO_MMIO_MSI_CMD_ENABLE,
+		vm_dev->base + VIRTIO_MMIO_MSI_COMMAND);
+}
+
+static inline int mmio_msi_irq_vector(struct device *dev, unsigned int nr)
+{
+	struct msi_desc *entry = first_msi_entry(dev);
+
+	return entry->irq + nr;
+}
+
 #else
 static inline void mmio_msi_create_irq_domain(void) {}
+static inline int mmio_msi_irq_vector(struct device *dev, unsigned int nr)
+{
+	return -EINVAL;
+}
+static inline void mmio_get_msi_domain(struct virtio_device *vdev) {}
+static inline int mmio_msi_domain_alloc_irqs(struct device *dev,
+				unsigned int nvec)
+{
+	return -EINVAL;
+}
+static inline void mmio_msi_domain_free_irqs(struct device *dev) {}
 #endif
 
 #endif
