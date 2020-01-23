@@ -61,13 +61,12 @@
 #include <linux/io.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
+#include "virtio_mmio_common.h"
 
 
 
@@ -76,24 +75,6 @@
 #define VIRTIO_MMIO_VRING_ALIGN		PAGE_SIZE
 
 
-
-#define to_virtio_mmio_device(_plat_dev) \
-	container_of(_plat_dev, struct virtio_mmio_device, vdev)
-
-struct virtio_mmio_device {
-	struct virtio_device vdev;
-	struct platform_device *pdev;
-
-	void __iomem *base;
-	unsigned long version;
-
-	/* a list of queues so we can dispatch IRQs */
-	spinlock_t lock;
-	struct list_head virtqueues;
-
-	unsigned short notify_base;
-	unsigned short notify_multiplier;
-};
 
 struct virtio_mmio_vq_info {
 	/* the actual virtqueue */
