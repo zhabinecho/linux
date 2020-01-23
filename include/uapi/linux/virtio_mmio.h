@@ -122,6 +122,21 @@
 #define VIRTIO_MMIO_QUEUE_USED_LOW	0x0a0
 #define VIRTIO_MMIO_QUEUE_USED_HIGH	0x0a4
 
+/* MSI max vector number that device supports - Read Only */
+#define VIRTIO_MMIO_MSI_VEC_NUM		0x0c0
+/* MSI state register  - Read Only */
+#define VIRTIO_MMIO_MSI_STATE		0x0c4
+/* MSI command register - Write Only */
+#define VIRTIO_MMIO_MSI_COMMAND		0x0c8
+/* MSI vector selector  - Write Only */
+#define VIRTIO_MMIO_MSI_VEC_SEL		0x0d0
+/* MSI low 32 bit address, 64 bits in two halves */
+#define VIRTIO_MMIO_MSI_ADDRESS_LOW	0x0d4
+/* MSI high 32 bit address, 64 bits in two halves */
+#define VIRTIO_MMIO_MSI_ADDRESS_HIGH	0x0d8
+/* MSI 32 bit data */
+#define VIRTIO_MMIO_MSI_DATA		0x0dc
+
 /* Configuration atomicity value */
 #define VIRTIO_MMIO_CONFIG_GENERATION	0x0fc
 
@@ -130,6 +145,22 @@
 #define VIRTIO_MMIO_CONFIG		0x100
 
 
+/* MSI commands */
+#define VIRTIO_MMIO_MSI_CMD_ENABLE	0x1
+#define VIRTIO_MMIO_MSI_CMD_DISABLE	0x2
+#define VIRTIO_MMIO_MSI_CMD_CONFIGURE	0x3
+#define VIRTIO_MMIO_MSI_CMD_MASK	0x4
+#define VIRTIO_MMIO_MSI_CMD_UNMASK	0x5
+#define VIRTIO_MMIO_MSI_CMD_MAP_CONFIG	0x6
+#define VIRTIO_MMIO_MSI_CMD_MAP_QUEUE	0x7
+
+/* MSI NO_VECTOR */
+#define VIRTIO_MMIO_MSI_NO_VECTOR	0xffffffff
+
+/* MSI state enabled state mask */
+#define VIRTIO_MMIO_MSI_ENABLED_MASK	(1 << 31)
+/* MSI state MSI sharing mask */
+#define VIRTIO_MMIO_MSI_SHARING_MASK	(1 << 30)
 
 /*
  * Interrupt flags (re: interrupt status & acknowledge registers)

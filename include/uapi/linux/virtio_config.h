@@ -52,7 +52,7 @@
  * rest are per-device feature bits.
  */
 #define VIRTIO_TRANSPORT_F_START	28
-#define VIRTIO_TRANSPORT_F_END		40
+#define VIRTIO_TRANSPORT_F_END		41
 
 #ifndef VIRTIO_CONFIG_NO_LEGACY
 /* Do we get callbacks when the ring is completely used, even if we've
@@ -94,4 +94,9 @@
  * layer.
  */
 #define VIRTIO_F_MMIO_NOTIFICATION	39
+
+/*
+ * This feature indicates the MSI support on MMIO layer.
+ */
+#define VIRTIO_F_MMIO_MSI		40
 #endif /* _UAPI_LINUX_VIRTIO_CONFIG_H */

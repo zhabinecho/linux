@@ -26,6 +26,14 @@ struct virtio_mmio_device {
 
 	unsigned short notify_base;
 	unsigned short notify_multiplier;
+
+	/* Name strings for interrupts. This size should be enough. */
+	char (*vm_vq_names)[256];
+
+	/* used vectors */
+	unsigned int msi_used_vectors;
+	bool msi_share;
+	bool msi_enabled;
 };
 
 #endif
