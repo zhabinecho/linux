@@ -2,6 +2,65 @@
 #ifndef _DRIVERS_VIRTIO_VIRTIO_MMIO_MSI_H
 #define _DRIVERS_VIRTIO_VIRTIO_MMIO_MSI_H
 
+/*
+In cloud native environment, we need a lightweight and secure system. It
+should benefit from the speed of containers and the security of VM, which
+is classified as secure containers. The traditional solution of cloud VM
+is Qemu. In fact we don't need to pay for the legacy devices. Currently,
+more userspace VMMs, e.g. Qemu, Firecracker, Cloud Hypervisor and Alibaba
+Cloud VMM which is called Dragonball, began to pay attention to a
+lightweight solution.
+
+The lightweight VMM is suitable to cloud native infrastructure which is
+designed for creating secure sandbox to address the requirements of
+multi-tenant. Meanwhile, with faster startup time and lower memory
+overhead, it makes possible to launch thousands of microVMs on the same
+machine. This VMM minimizes the emulation devices and uses virtio-mmio to
+get a more lightweight transport layer. The virtio-mmio devices have less
+code than virtio-pci, which can decrease boot time and increase deploy
+density by customizing kernel such as setting pci=off. From another point
+of view, the minimal device can reduce the attack surface.
+
+We have compared the number of files and the lines of code between
+virtio-mmio and virio-pci.
+
+				Virtio-PCI	    Virtio-MMIO	
+	number of files(Linux)	    161			1
+	lines of code(Linux)	    78237		538
+	number of files(Qemu)	    24			1
+	lines of code(Qemu)	    8952		421
+
+But the current standard virtio-mmio spec has some limitations which is
+only support legacy interrupt and will cause performance penalties.
+
+To address such limitation, we proposed to update virtio-mmio spec with
+two new feature bits to support MSI interrupt and enhancing notification
+mechanism[1], which can achieve the same performance as virtio-pci devices
+with only around 600 lines of code.
+
+Here are the performance gain of MSI interrupt in virtio-mmio. Each case is
+repeated three times.
+
+        netperf -t TCP_RR -H 192.168.1.36 -l 30 -- -r 32,1024
+
+                Virtio-PCI    Virtio-MMIO   Virtio-MMIO(MSI)
+        trans/s     9536        6939            9500
+        trans/s     9734        7029            9749
+        trans/s     9894        7095            9318
+
+With the virtio spec proposal[1], other VMMs (e.g. Qemu) can also make use
+of the new features to get a enhancing performance.
+
+[1] https://lkml.org/lkml/2020/1/21/31
+
+Change Log:
+v1->v2
+* Change version update to feature bit
+* Add mask/unmask support
+* Add two MSI sharing/non-sharing modes
+* Create generic irq domain for all architectures
+*/
+
 #ifdef CONFIG_VIRTIO_MMIO_MSI
 
 #include <linux/msi.h>
